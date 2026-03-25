@@ -5,14 +5,17 @@ import mongoose from "mongoose";
 // ================== ENV ==================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = String(process.env.OWNER_ID);
-const LOG_GROUP_ID = String(process.env.LOG_GROUP_ID); // for livegram
+const LOG_GROUP_ID = Number(process.env.LOG_GROUP_ID);
+
+if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
 
 const bot = new Bot(BOT_TOKEN);
 
 // ================== DB ==================
 await mongoose.connect(process.env.MONGO_URI);
+console.log("✅ Mongo Connected");
 
-// ----- USER -----
+// ================== SCHEMAS ==================
 const userSchema = new mongoose.Schema({
   userId: String,
   firstName: String,
@@ -28,14 +31,12 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
-// ----- GROUP -----
 const groupSchema = new mongoose.Schema({
   groupId: String,
   title: String,
-  admins: [String],
   settings: {
     maxWarnings: { type: Number, default: 3 },
-    punishment: { type: String, default: "mute" },
+    punishment: { type: "String", default: "mute" },
     forceJoinEnabled: { type: Boolean, default: false },
     forceJoinChannel: String,
     globalBanSync: { type: Boolean, default: false },
@@ -43,7 +44,6 @@ const groupSchema = new mongoose.Schema({
 });
 const Group = mongoose.model("Group", groupSchema);
 
-// ----- GLOBAL BAN -----
 const globalBanSchema = new mongoose.Schema({
   userId: String,
 });
@@ -76,10 +76,10 @@ async function getUser(userId) {
 }
 
 async function getGroup(chat) {
-  let g = await Group.findOne({ groupId: chat.id });
+  let g = await Group.findOne({ groupId: String(chat.id) });
   if (!g) {
     g = await Group.create({
-      groupId: chat.id,
+      groupId: String(chat.id),
       title: chat.title,
     });
   }
@@ -132,7 +132,7 @@ async function checkForceJoin(ctx, group) {
         `https://t.me/${group.settings.forceJoinChannel.replace("@", "")}`
       );
 
-      const msg = await ctx.reply("🔐 Join required channel to chat.", {
+      const msg = await ctx.reply("🔐 Join required channel.", {
         reply_markup: btn,
       });
 
@@ -143,11 +143,30 @@ async function checkForceJoin(ctx, group) {
   return false;
 }
 
-// ================== MESSAGE HANDLER ==================
+// ================== MAIN MESSAGE HANDLER ==================
 bot.on("message", async (ctx) => {
   if (!ctx.from || ctx.from.is_bot) return;
-  if (ctx.chat.type === "private") return;
 
+  // ================= PRIVATE (LIVEGRAM) =================
+  if (ctx.chat.type === "private") {
+    if (String(ctx.from.id) === OWNER_ID) return;
+
+    const sent = await bot.api.forwardMessage(
+      LOG_GROUP_ID,
+      ctx.chat.id,
+      ctx.message.message_id
+    );
+
+    await bot.api.sendMessage(
+      LOG_GROUP_ID,
+      `👤 ${ctx.from.id}`,
+      { reply_to_message_id: sent.message_id }
+    );
+
+    return;
+  }
+
+  // ================= GROUP LOGIC =================
   const userId = String(ctx.from.id);
   const group = await getGroup(ctx.chat);
   const user = await getUser(userId);
@@ -162,9 +181,7 @@ bot.on("message", async (ctx) => {
   if (group.settings.globalBanSync) {
     const gb = await GlobalBan.findOne({ userId });
     if (gb) {
-      try {
-        await ctx.banChatMember(ctx.from.id);
-      } catch {}
+      try { await ctx.banChatMember(ctx.from.id); } catch {}
       return;
     }
   }
@@ -197,8 +214,6 @@ bot.on("message", async (ctx) => {
   warn.count++;
   await user.save();
 
-  const emoji = warn.count === 1 ? "⏳" : warn.count === 2 ? "⏳⏳" : "⚠️";
-
   if (warn.count >= group.settings.maxWarnings) {
     if (group.settings.punishment === "ban") {
       await ctx.banChatMember(ctx.from.id);
@@ -208,7 +223,6 @@ bot.on("message", async (ctx) => {
       });
     }
 
-    // GLOBAL BAN ADD
     if (group.settings.globalBanSync) {
       await GlobalBan.create({ userId });
     }
@@ -219,18 +233,32 @@ bot.on("message", async (ctx) => {
       `https://t.me/${me.username}?start=unmute_${ctx.chat.id}`
     );
 
-    await ctx.reply(`🥂🔇 ${mention(ctx.from)} punished`, {
+    await ctx.reply(`🔇 ${mention(ctx.from)} punished`, {
       parse_mode: "HTML",
       reply_markup: kb,
     });
     return;
   }
 
-  const msg = await ctx.reply(
-    `${emoji} ${mention(ctx.from)} warning ${warn.count}/${group.settings.maxWarnings}`,
+  await ctx.reply(
+    `⚠️ ${mention(ctx.from)} warning ${warn.count}/${group.settings.maxWarnings}`,
     { parse_mode: "HTML" }
   );
-  setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, msg.message_id), 8000);
+});
+
+// ================== OWNER REPLY (LIVEGRAM) ==================
+bot.on("message", async (ctx) => {
+  if (String(ctx.from.id) !== OWNER_ID) return;
+  if (ctx.chat.id !== LOG_GROUP_ID) return;
+
+  if (!ctx.message.reply_to_message) return;
+
+  const text = ctx.message.reply_to_message.text;
+  if (!text?.includes("👤")) return;
+
+  const userId = text.split(" ")[1];
+
+  await bot.api.copyMessage(userId, ctx.chat.id, ctx.message.message_id);
 });
 
 // ================== LEADERBOARD ==================
@@ -278,69 +306,6 @@ bot.command("broadcast", async (ctx) => {
   ctx.reply(`✅ Sent to ${sent} users`);
 });
 
-// ================== LIVEGRAM ==================
-bot.on("message:private", async (ctx) => {
-  if (String(ctx.from.id) === OWNER_ID) return;
-
-  const msg = ctx.message;
-
-  const sent = await bot.api.forwardMessage(
-    LOG_GROUP_ID,
-    ctx.chat.id,
-    msg.message_id
-  );
-
-  await bot.api.sendMessage(
-    LOG_GROUP_ID,
-    `👤 ${ctx.from.id}`,
-    {
-      reply_to_message_id: sent.message_id,
-    }
-  );
-});
-
-// REPLY BACK
-bot.on("message", async (ctx) => {
-  if (String(ctx.from.id) !== OWNER_ID) return;
-  if (ctx.chat.id != LOG_GROUP_ID) return;
-
-  if (!ctx.message.reply_to_message) return;
-
-  const text = ctx.message.reply_to_message.text;
-  if (!text?.includes("👤")) return;
-
-  const userId = text.split(" ")[1];
-
-  await bot.api.copyMessage(userId, ctx.chat.id, ctx.message.message_id);
-});
-
-// ================== SETTINGS PANEL ==================
-bot.command("settings", async (ctx) => {
-  if (ctx.chat.type === "private") return;
-
-  const group = await getGroup(ctx.chat);
-
-  const kb = new InlineKeyboard()
-    .text(`Force Join: ${group.settings.forceJoinEnabled ? "ON" : "OFF"}`, "fj")
-    .row()
-    .text(`Global Ban: ${group.settings.globalBanSync ? "ON" : "OFF"}`, "gb");
-
-  ctx.reply("⚙️ Settings", { reply_markup: kb });
-});
-
-bot.callbackQuery("fj", async (ctx) => {
-  const g = await getGroup(ctx.chat);
-  g.settings.forceJoinEnabled = !g.settings.forceJoinEnabled;
-  await g.save();
-  ctx.answerCallbackQuery("Toggled");
-});
-
-bot.callbackQuery("gb", async (ctx) => {
-  const g = await getGroup(ctx.chat);
-  g.settings.globalBanSync = !g.settings.globalBanSync;
-  await g.save();
-  ctx.answerCallbackQuery("Toggled");
-});
-
-// ================== START ==================
+// ================== START BOT ==================
 bot.start();
+console.log("🚀 Bot Started");
