@@ -1,7 +1,7 @@
 {
   "name": "glassguard-bot",
   "version": "1.0.0",
-  "description": "Telegram moderation bot with MongoDB, warnings, force join, global ban, broadcast, livegram",
+  "description": "Telegram moderation bot...",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -14,5 +14,6 @@
   "dependencies": {
     "grammy": "^1.20.0",
     "mongoose": "^8.0.0"
+    // add drizzle-orm, etc. if you use them
   }
 }
