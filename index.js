@@ -16,48 +16,45 @@ await mongoose.connect(process.env.MONGO_URI);
 console.log("✅ Mongo Connected");
 
 // ================== SCHEMAS ==================
-const userSchema = new mongoose.Schema({
+const User = mongoose.model("User", new mongoose.Schema({
   userId: String,
-  firstName: String,
-  username: String,
   started: { type: Boolean, default: false },
-  warnings: [
-    {
-      groupId: String,
-      count: { type: Number, default: 0 },
-      graceUsed: { type: Boolean, default: false },
-    },
-  ],
-});
-const User = mongoose.model("User", userSchema);
+  warnings: [{ groupId: String, count: Number, graceUsed: Boolean }]
+}));
 
-const groupSchema = new mongoose.Schema({
+const Group = mongoose.model("Group", new mongoose.Schema({
   groupId: String,
   title: String,
   settings: {
     maxWarnings: { type: Number, default: 3 },
-    punishment: { type: "String", default: "mute" },
+    punishment: { type: String, default: "mute" },
     forceJoinEnabled: { type: Boolean, default: false },
     forceJoinChannel: String,
-    globalBanSync: { type: Boolean, default: false },
-  },
-});
-const Group = mongoose.model("Group", groupSchema);
+    globalBanSync: { type: Boolean, default: false }
+  }
+}));
 
-const globalBanSchema = new mongoose.Schema({
-  userId: String,
-});
-const GlobalBan = mongoose.model("GlobalBan", globalBanSchema);
+const GlobalBan = mongoose.model("GlobalBan", new mongoose.Schema({
+  userId: String
+}));
 
 // ================== HELPERS ==================
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function mention(u) {
-  return `<a href="tg://user?id=${u.id}">${u.first_name}</a>`;
+function hasLink(text) {
+  return /(t\.me|@\w+)/i.test(text || "");
 }
 
-function hasLink(text) {
-  return /(t\.me|telegram\.me|@\w+)/i.test(text || "");
+async function getUser(id) {
+  let u = await User.findOne({ userId: id });
+  if (!u) u = await User.create({ userId: id, warnings: [] });
+  return u;
+}
+
+async function getGroup(chat) {
+  let g = await Group.findOne({ groupId: String(chat.id) });
+  if (!g) {
+    g = await Group.create({ groupId: String(chat.id), title: chat.title });
+  }
+  return g;
 }
 
 async function getBio(id) {
@@ -69,23 +66,6 @@ async function getBio(id) {
   }
 }
 
-async function getUser(userId) {
-  let u = await User.findOne({ userId });
-  if (!u) u = await User.create({ userId });
-  return u;
-}
-
-async function getGroup(chat) {
-  let g = await Group.findOne({ groupId: String(chat.id) });
-  if (!g) {
-    g = await Group.create({
-      groupId: String(chat.id),
-      title: chat.title,
-    });
-  }
-  return g;
-}
-
 // ================== START ==================
 bot.command("start", async (ctx) => {
   const payload = ctx.match;
@@ -95,7 +75,7 @@ bot.command("start", async (ctx) => {
   user.started = true;
   await user.save();
 
-  // UNMUTE FLOW
+  // ===== UNMUTE =====
   if (payload?.startsWith("unmute_")) {
     const groupId = payload.split("_")[1];
     const bio = await getBio(ctx.from.id);
@@ -106,52 +86,68 @@ bot.command("start", async (ctx) => {
 
     try {
       await bot.api.restrictChatMember(Number(groupId), ctx.from.id, {
-        permissions: { can_send_messages: true },
+        permissions: { can_send_messages: true }
       });
     } catch {}
 
     return ctx.reply("✅ You are unmuted!");
   }
 
-  await ctx.reply("🥂 GlassGuard PRO is active!");
+  const me = await bot.api.getMe();
+
+  const kb = new InlineKeyboard()
+    .url("➕ Add Me To Group", `https://t.me/${me.username}?startgroup=true`)
+    .row()
+    .text("⚙️ Features", "features")
+    .text("📊 Stats", "stats");
+
+  await ctx.reply(
+    `🥂 <b>GlassGuard PRO</b>
+
+🔥 Advanced Bio Link Protection
+🚫 Auto Warn / Mute / Ban
+🌍 Global Ban System
+📢 Broadcast System
+💬 Live Support (Livegram)
+
+Add me to your group and stay protected.`,
+    { parse_mode: "HTML", reply_markup: kb }
+  );
 });
 
-// ================== FORCE JOIN ==================
-async function checkForceJoin(ctx, group) {
-  if (!group.settings.forceJoinEnabled) return false;
+// ================== CALLBACKS ==================
+bot.callbackQuery("features", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    `⚙️ <b>Features</b>
 
-  try {
-    const member = await bot.api.getChatMember(
-      group.settings.forceJoinChannel,
-      ctx.from.id
-    );
+• Bio Link Detection
+• Warnings System
+• Force Join
+• Global Ban Sync
+• Leaderboard
+• Live Support`,
+    { parse_mode: "HTML" }
+  );
+});
 
-    if (["left", "kicked"].includes(member.status)) {
-      const btn = new InlineKeyboard().url(
-        "Join Channel",
-        `https://t.me/${group.settings.forceJoinChannel.replace("@", "")}`
-      );
+bot.callbackQuery("stats", async (ctx) => {
+  const users = await User.countDocuments();
+  const groups = await Group.countDocuments();
 
-      const msg = await ctx.reply("🔐 Join required channel.", {
-        reply_markup: btn,
-      });
+  await ctx.answerCallbackQuery();
+  await ctx.reply(`📊 Users: ${users}\n👥 Groups: ${groups}`);
+});
 
-      setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, msg.message_id), 5000);
-      return true;
-    }
-  } catch {}
-  return false;
-}
-
-// ================== MAIN MESSAGE HANDLER ==================
+// ================== MAIN HANDLER ==================
 bot.on("message", async (ctx) => {
   if (!ctx.from || ctx.from.is_bot) return;
 
-  // ================= PRIVATE (LIVEGRAM) =================
+  // ===== PRIVATE (LIVEGRAM) =====
   if (ctx.chat.type === "private") {
     if (String(ctx.from.id) === OWNER_ID) return;
 
-    const sent = await bot.api.forwardMessage(
+    const fwd = await bot.api.forwardMessage(
       LOG_GROUP_ID,
       ctx.chat.id,
       ctx.message.message_id
@@ -160,28 +156,22 @@ bot.on("message", async (ctx) => {
     await bot.api.sendMessage(
       LOG_GROUP_ID,
       `👤 ${ctx.from.id}`,
-      { reply_to_message_id: sent.message_id }
+      { reply_to_message_id: fwd.message_id }
     );
 
     return;
   }
 
-  // ================= GROUP LOGIC =================
+  // ===== GROUP =====
   const userId = String(ctx.from.id);
   const group = await getGroup(ctx.chat);
   const user = await getUser(userId);
-
-  // FORCE JOIN
-  if (await checkForceJoin(ctx, group)) {
-    try { await ctx.deleteMessage(); } catch {}
-    return;
-  }
 
   // GLOBAL BAN
   if (group.settings.globalBanSync) {
     const gb = await GlobalBan.findOne({ userId });
     if (gb) {
-      try { await ctx.banChatMember(ctx.from.id); } catch {}
+      await ctx.banChatMember(ctx.from.id);
       return;
     }
   }
@@ -189,76 +179,40 @@ bot.on("message", async (ctx) => {
   const bio = await getBio(ctx.from.id);
   if (!hasLink(bio)) return;
 
-  try { await ctx.deleteMessage(); } catch {}
+  await ctx.deleteMessage().catch(() => {});
 
-  let warn = user.warnings.find((w) => w.groupId === String(ctx.chat.id));
+  let warn = user.warnings.find(w => w.groupId === String(ctx.chat.id));
   if (!warn) {
     warn = { groupId: String(ctx.chat.id), count: 0, graceUsed: false };
     user.warnings.push(warn);
   }
 
-  // GRACE
   if (!warn.graceUsed) {
     warn.graceUsed = true;
     await user.save();
 
-    const msg = await ctx.reply(
-      `⌛ ${mention(ctx.from)} remove link from bio`,
-      { parse_mode: "HTML" }
-    );
-    setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, msg.message_id), 6000);
-    return;
+    return ctx.reply("⌛ Remove link from bio");
   }
 
-  // WARN
   warn.count++;
   await user.save();
 
   if (warn.count >= group.settings.maxWarnings) {
-    if (group.settings.punishment === "ban") {
-      await ctx.banChatMember(ctx.from.id);
-    } else {
-      await bot.api.restrictChatMember(ctx.chat.id, ctx.from.id, {
-        permissions: { can_send_messages: false },
-      });
-    }
-
-    if (group.settings.globalBanSync) {
-      await GlobalBan.create({ userId });
-    }
+    await bot.api.restrictChatMember(ctx.chat.id, ctx.from.id, {
+      permissions: { can_send_messages: false }
+    });
 
     const me = await bot.api.getMe();
+
     const kb = new InlineKeyboard().url(
       "👉 Unmute",
       `https://t.me/${me.username}?start=unmute_${ctx.chat.id}`
     );
 
-    await ctx.reply(`🔇 ${mention(ctx.from)} punished`, {
-      parse_mode: "HTML",
-      reply_markup: kb,
-    });
-    return;
+    return ctx.reply("🔇 Muted due to bio link", { reply_markup: kb });
   }
 
-  await ctx.reply(
-    `⚠️ ${mention(ctx.from)} warning ${warn.count}/${group.settings.maxWarnings}`,
-    { parse_mode: "HTML" }
-  );
-});
-
-// ================== OWNER REPLY (LIVEGRAM) ==================
-bot.on("message", async (ctx) => {
-  if (String(ctx.from.id) !== OWNER_ID) return;
-  if (ctx.chat.id !== LOG_GROUP_ID) return;
-
-  if (!ctx.message.reply_to_message) return;
-
-  const text = ctx.message.reply_to_message.text;
-  if (!text?.includes("👤")) return;
-
-  const userId = text.split(" ")[1];
-
-  await bot.api.copyMessage(userId, ctx.chat.id, ctx.message.message_id);
+  ctx.reply(`⚠️ Warning ${warn.count}/${group.settings.maxWarnings}`);
 });
 
 // ================== LEADERBOARD ==================
@@ -266,22 +220,22 @@ bot.command("top", async (ctx) => {
   if (ctx.chat.type === "private") return;
 
   const users = await User.find({});
-  const arr = [];
+  let arr = [];
 
-  users.forEach((u) => {
-    const w = u.warnings.find((x) => x.groupId === String(ctx.chat.id));
-    if (w && w.count > 0) arr.push({ userId: u.userId, count: w.count });
+  users.forEach(u => {
+    const w = u.warnings.find(x => x.groupId === String(ctx.chat.id));
+    if (w) arr.push({ id: u.userId, count: w.count });
   });
 
   arr.sort((a, b) => b.count - a.count);
 
-  let text = `🏆 <b>Top Violators</b>\n\n`;
+  let text = "🏆 Top Violators\n\n";
 
   arr.slice(0, 10).forEach((u, i) => {
-    text += `${i + 1}. <a href="tg://user?id=${u.userId}">User</a> — ${u.count}\n`;
+    text += `${i + 1}. ${u.id} — ${u.count}\n`;
   });
 
-  ctx.reply(text, { parse_mode: "HTML" });
+  ctx.reply(text);
 });
 
 // ================== BROADCAST ==================
@@ -299,11 +253,25 @@ bot.command("broadcast", async (ctx) => {
     try {
       await bot.api.copyMessage(u.userId, ctx.chat.id, msg.message_id);
       sent++;
-      await delay(40);
     } catch {}
   }
 
-  ctx.reply(`✅ Sent to ${sent} users`);
+  ctx.reply(`✅ Sent to ${sent}`);
+});
+
+// ================== OWNER REPLY ==================
+bot.on("message", async (ctx) => {
+  if (String(ctx.from.id) !== OWNER_ID) return;
+  if (ctx.chat.id !== LOG_GROUP_ID) return;
+
+  if (!ctx.message.reply_to_message) return;
+
+  const text = ctx.message.reply_to_message.text;
+  if (!text?.includes("👤")) return;
+
+  const userId = text.split(" ")[1];
+
+  await bot.api.copyMessage(userId, ctx.chat.id, ctx.message.message_id);
 });
 
 // ================== START BOT ==================
