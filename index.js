@@ -19,7 +19,9 @@ console.log("✅ Mongo Connected");
 const User = mongoose.model("User", new mongoose.Schema({
   userId: String,
   started: { type: Boolean, default: false },
-  warnings: [{ groupId: String, count: Number, graceUsed: Boolean }]
+  warnings: [
+    { groupId: String, count: Number, graceUsed: Boolean }
+  ]
 }));
 
 const Group = mongoose.model("Group", new mongoose.Schema({
@@ -43,20 +45,6 @@ function hasLink(text) {
   return /(t\.me|@\w+)/i.test(text || "");
 }
 
-async function getUser(id) {
-  let u = await User.findOne({ userId: id });
-  if (!u) u = await User.create({ userId: id, warnings: [] });
-  return u;
-}
-
-async function getGroup(chat) {
-  let g = await Group.findOne({ groupId: String(chat.id) });
-  if (!g) {
-    g = await Group.create({ groupId: String(chat.id), title: chat.title });
-  }
-  return g;
-}
-
 async function getBio(id) {
   try {
     const c = await bot.api.getChat(id);
@@ -66,7 +54,24 @@ async function getBio(id) {
   }
 }
 
-// ================== START ==================
+async function getUser(id) {
+  let u = await User.findOne({ userId: id });
+  if (!u) u = await User.create({ userId: id, warnings: [] });
+  return u;
+}
+
+async function getGroup(chat) {
+  let g = await Group.findOne({ groupId: String(chat.id) });
+  if (!g) {
+    g = await Group.create({
+      groupId: String(chat.id),
+      title: chat.title
+    });
+  }
+  return g;
+}
+
+// ================== START UI ==================
 bot.command("start", async (ctx) => {
   const payload = ctx.match;
   const userId = String(ctx.from.id);
@@ -75,7 +80,7 @@ bot.command("start", async (ctx) => {
   user.started = true;
   await user.save();
 
-  // ===== UNMUTE =====
+  // ===== UNMUTE FLOW =====
   if (payload?.startsWith("unmute_")) {
     const groupId = payload.split("_")[1];
     const bio = await getBio(ctx.from.id);
@@ -96,37 +101,40 @@ bot.command("start", async (ctx) => {
   const me = await bot.api.getMe();
 
   const kb = new InlineKeyboard()
-    .url("➕ Add Me To Group", `https://t.me/${me.username}?startgroup=true`)
+    .url("➕ Add Me", `https://t.me/${me.username}?startgroup=true`)
     .row()
     .text("⚙️ Features", "features")
-    .text("📊 Stats", "stats");
+    .text("📊 Stats", "stats")
+    .row()
+    .text("💬 Support", "support");
 
   await ctx.reply(
-    `🥂 <b>GlassGuard PRO</b>
+`🥂 <b>GlassGuard PRO</b>
 
-🔥 Advanced Bio Link Protection
-🚫 Auto Warn / Mute / Ban
+🔥 Bio Link Protection System
+⚠️ Smart Warnings + Punishments
 🌍 Global Ban System
-📢 Broadcast System
-💬 Live Support (Livegram)
+📢 Broadcast Engine
+💬 Live Support System
 
 Add me to your group and stay protected.`,
     { parse_mode: "HTML", reply_markup: kb }
   );
 });
 
-// ================== CALLBACKS ==================
+// ================== UI CALLBACKS ==================
 bot.callbackQuery("features", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    `⚙️ <b>Features</b>
+`⚙️ <b>Features</b>
 
 • Bio Link Detection
-• Warnings System
+• Auto Delete + Warn
+• Mute / Ban System
 • Force Join
 • Global Ban Sync
 • Leaderboard
-• Live Support`,
+• Livegram Support`,
     { parse_mode: "HTML" }
   );
 });
@@ -138,6 +146,35 @@ bot.callbackQuery("stats", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply(`📊 Users: ${users}\n👥 Groups: ${groups}`);
 });
+
+bot.callbackQuery("support", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("💬 Just send message here to contact owner.");
+});
+
+// ================== FORCE JOIN ==================
+async function checkForceJoin(ctx, group) {
+  if (!group.settings.forceJoinEnabled || !group.settings.forceJoinChannel) return false;
+
+  try {
+    const member = await bot.api.getChatMember(
+      group.settings.forceJoinChannel,
+      ctx.from.id
+    );
+
+    if (["left", "kicked"].includes(member.status)) {
+      const btn = new InlineKeyboard().url(
+        "Join Channel",
+        `https://t.me/${group.settings.forceJoinChannel.replace("@", "")}`
+      );
+
+      await ctx.reply("🔐 Join channel to chat", { reply_markup: btn });
+      return true;
+    }
+  } catch {}
+
+  return false;
+}
 
 // ================== MAIN HANDLER ==================
 bot.on("message", async (ctx) => {
@@ -167,7 +204,11 @@ bot.on("message", async (ctx) => {
   const group = await getGroup(ctx.chat);
   const user = await getUser(userId);
 
-  // GLOBAL BAN
+  if (await checkForceJoin(ctx, group)) {
+    await ctx.deleteMessage().catch(() => {});
+    return;
+  }
+
   if (group.settings.globalBanSync) {
     const gb = await GlobalBan.findOne({ userId });
     if (gb) {
@@ -190,7 +231,6 @@ bot.on("message", async (ctx) => {
   if (!warn.graceUsed) {
     warn.graceUsed = true;
     await user.save();
-
     return ctx.reply("⌛ Remove link from bio");
   }
 
@@ -203,7 +243,6 @@ bot.on("message", async (ctx) => {
     });
 
     const me = await bot.api.getMe();
-
     const kb = new InlineKeyboard().url(
       "👉 Unmute",
       `https://t.me/${me.username}?start=unmute_${ctx.chat.id}`
@@ -213,6 +252,34 @@ bot.on("message", async (ctx) => {
   }
 
   ctx.reply(`⚠️ Warning ${warn.count}/${group.settings.maxWarnings}`);
+});
+
+// ================== SETTINGS ==================
+bot.command("settings", async (ctx) => {
+  if (ctx.chat.type === "private") return;
+
+  const group = await getGroup(ctx.chat);
+
+  const kb = new InlineKeyboard()
+    .text(`Force Join: ${group.settings.forceJoinEnabled ? "ON" : "OFF"}`, "fj")
+    .row()
+    .text(`Global Ban: ${group.settings.globalBanSync ? "ON" : "OFF"}`, "gb");
+
+  ctx.reply("⚙️ Settings", { reply_markup: kb });
+});
+
+bot.callbackQuery("fj", async (ctx) => {
+  const g = await getGroup(ctx.chat);
+  g.settings.forceJoinEnabled = !g.settings.forceJoinEnabled;
+  await g.save();
+  ctx.answerCallbackQuery("Force Join toggled");
+});
+
+bot.callbackQuery("gb", async (ctx) => {
+  const g = await getGroup(ctx.chat);
+  g.settings.globalBanSync = !g.settings.globalBanSync;
+  await g.save();
+  ctx.answerCallbackQuery("Global Ban toggled");
 });
 
 // ================== LEADERBOARD ==================
@@ -230,7 +297,6 @@ bot.command("top", async (ctx) => {
   arr.sort((a, b) => b.count - a.count);
 
   let text = "🏆 Top Violators\n\n";
-
   arr.slice(0, 10).forEach((u, i) => {
     text += `${i + 1}. ${u.id} — ${u.count}\n`;
   });
@@ -248,7 +314,6 @@ bot.command("broadcast", async (ctx) => {
   const users = await User.find({ started: true });
 
   let sent = 0;
-
   for (let u of users) {
     try {
       await bot.api.copyMessage(u.userId, ctx.chat.id, msg.message_id);
@@ -274,6 +339,6 @@ bot.on("message", async (ctx) => {
   await bot.api.copyMessage(userId, ctx.chat.id, ctx.message.message_id);
 });
 
-// ================== START BOT ==================
+// ================== START ==================
 bot.start();
 console.log("🚀 Bot Started");
