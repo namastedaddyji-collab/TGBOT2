@@ -1,7 +1,7 @@
 {
   "name": "glassguard-bot",
   "version": "1.0.0",
-  "description": "Telegram moderation bot...",
+  "description": "Telegram moderation bot with bio link protection",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "grammy": "^1.20.0",
-    "mongoose": "^8.0.0"
-    // add drizzle-orm, etc. if you use them
+    "drizzle-orm": "^0.29.0",
+    "pg": "^8.11.0"
   }
 }
