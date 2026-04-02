@@ -1,26 +1,33 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { containsTelegramLink } from "./linkDetector.js";
 import {
-  upsertUser, upsertGroup, getGroupSettings, incrementWarning, resetWarning,
-  logActivity, saveMessageMap, getMessageMap, adjustReputation,
-  getUserIdsByType, saveBroadcastHistory, ensureBotSettings,
-  db, groupsTable, groupSettingsTable, usersTable, warningsTable, botSettingsTable,
+  upsertUser,
+  upsertGroup,
+  getGroupSettings,
+  incrementWarning,
+  resetWarning,
+  logActivity,
+  saveMessageMap,
+  getMessageMap,
+  adjustReputation,
+  ensureBotSettings,
+  db,
+  botSettingsTable,
 } from "./db.js";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 
 const BOT_TOKEN = process.env["BOT_TOKEN"];
-const OWNER_ID = process.env["BOT_OWNER_ID"] || "";
+const OWNER_ID = process.env["BOT_OWNER_ID"] ? Number(process.env["BOT_OWNER_ID"]) : 0;
 const LOGS_CHAT_ID = process.env["LOGS_CHAT_ID"] || "";
-const BOT_USERNAME = "@BioBan_Robot";
 
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is required");
 
-export const bot = new Bot(BOT_TOKEN as string);
+export const bot = new Bot(BOT_TOKEN);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function isOwner(userId: number | string): boolean {
-  return userId.toString() === OWNER_ID;
+  return Number(userId) === OWNER_ID;
 }
 
 async function isAdmin(ctx: Context): Promise<boolean> {
@@ -54,10 +61,6 @@ async function getUserBio(userId: number): Promise<string | null> {
 
 function mention(user: { id: number; first_name: string; username?: string }): string {
   return `<a href="tg://user?id=${user.id}">${user.first_name}</a>`;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function safeEdit(ctx: Context, text: string, opts: object = {}) {
@@ -148,6 +151,7 @@ async function applyPunishment(
   }
 
   await adjustReputation(target.id.toString(), -20);
+
   await logActivity({
     type: actionDone,
     details: `${reason === "bio_link" ? "Bio link" : "Backup group"} — warnings: ${warnCount}/${maxWarns}`,
@@ -195,25 +199,21 @@ async function applyPunishment(
 async function handleUnmuteFlow(ctx: Context, groupId: string) {
   if (!ctx.from) return;
   const userId = ctx.from.id;
-  const bio = await getUserBio(userId);
 
+  const bio = await getUserBio(userId);
   const hasLink = containsTelegramLink(bio ?? "") || containsTelegramLink((bio ?? "").replace(/\s/g, ""));
 
   if (hasLink) {
     const keyboard = new InlineKeyboard().text("✅ I removed it — Check again", `recheck_bio_${groupId}`);
     await safeEdit(ctx,
       `🚫 <b>Your bio still has a Telegram link!</b>\n\n` +
-      `📱 <b>Steps to fix:</b>\n` +
-      `1. Open Telegram Settings\n` +
-      `2. Tap <b>Edit Profile</b>\n` +
-      `3. Clear your <b>Bio</b>\n` +
-      `4. Come back and tap the button below`,
+      `📱 <b>Steps to fix:</b>\n1. Open Telegram Settings\n2. Tap <b>Edit Profile</b>\n3. Clear your <b>Bio</b>\n4. Come back and tap the button below`,
       { reply_markup: keyboard }
     );
     return;
   }
 
-  // Bio clean → check membership + unmute/unban
+  // Bio is clean — unmute / unban
   const groupIdNum = Number(groupId);
   let memberStatus = "unknown";
 
@@ -221,20 +221,20 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
     const member = await bot.api.getChatMember(groupIdNum, userId);
     memberStatus = member.status;
   } catch (e) {
-    logger.error({ err: e }, "getChatMember failed in unmute");
+    logger.error({ err: e }, "getChatMember failed in unmute flow");
     await safeEdit(ctx, `⚠️ Could not verify membership. Ask an admin to unmute you manually.`);
     return;
   }
 
   if (memberStatus === "restricted") {
     await unmuteUser(groupIdNum, userId).catch((e) => logger.error({ err: e }, "unmute failed"));
-  } else if (memberStatus === "kicked" || memberStatus === "left") {
+  } else if (["kicked", "left"].includes(memberStatus)) {
     await bot.api.unbanChatMember(groupIdNum, userId).catch((e) => logger.error({ err: e }, "unban failed"));
   }
 
   await adjustReputation(userId.toString(), 10);
-  await resetWarning(userId.toString(), groupId);           // bio warning
-  await resetWarning(`backup_${userId}_${groupId}`, groupId); // backup warning
+  await resetWarning(userId.toString(), groupId);           // bio warnings
+  await resetWarning(`backup_${userId}_${groupId}`, groupId); // backup warnings
 
   await logActivity({
     type: "unmute",
@@ -248,7 +248,7 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
   );
 }
 
-// ─── Settings Menu Builders (unchanged except minor improvements) ─────────────
+// ─── Main Settings Menu ───────────────────────────────────────────────────────
 async function buildMainSettingsMenu(groupId: string, groupTitle: string) {
   const s = await getGroupSettings(groupId);
   if (!s) throw new Error("Settings not found");
@@ -271,19 +271,20 @@ async function buildMainSettingsMenu(groupId: string, groupTitle: string) {
   return { text, keyboard };
 }
 
-// ... (keep your other build*Menu functions as they are — they look mostly fine)
-
-
-// ─── Message Handler (Fixed & Improved) ───────────────────────────────────────
+// ─── Message Handler (Fully Fixed) ────────────────────────────────────────────
 bot.on("message", async (ctx) => {
   const chat = ctx.chat;
+
+  // Private chat: support replies
   if (chat.type === "private") {
-    // Support reply handling
-    if (LOGS_CHAT_ID && chat.id.toString() === LOGS_CHAT_ID && ctx.message.reply_to_message) {
+    if (LOGS_CHAT_ID && chat.id.toString() === LOGS_CHAT_ID && ctx.message?.reply_to_message?.message_id) {
       const mapping = await getMessageMap(ctx.message.reply_to_message.message_id.toString()).catch(() => null);
       if (mapping && ctx.message.text) {
         try {
-          await bot.api.sendMessage(Number(mapping.userId), `📩 <b>Message from support:</b>\n\n${ctx.message.text}`, { parse_mode: "HTML" });
+          await bot.api.sendMessage(Number(mapping.userId),
+            `📩 <b>Message from support:</b>\n\n${ctx.message.text}`,
+            { parse_mode: "HTML" }
+          );
           await ctx.react("👍").catch(() => {});
         } catch {
           await ctx.reply("❌ Could not deliver message.");
@@ -309,6 +310,7 @@ bot.on("message", async (ctx) => {
 
   // ── 1. Backup Group Membership Check ─────────────────────────────────────
   let backupViolation = false;
+
   if (settings.backupChannel) {
     let isMember = false;
     try {
@@ -318,7 +320,7 @@ bot.on("message", async (ctx) => {
       logger.warn({ backupChannel: settings.backupChannel, err: err?.message }, "Backup membership check failed");
       if (OWNER_ID) {
         bot.api.sendMessage(Number(OWNER_ID),
-          `⚠️ Backup check failed in <b>${chat.title}</b>\nBackup: <code>${settings.backupChannel}</code>\nError: ${err?.message}`,
+          `⚠️ Backup check failed in <b>${chat.title}</b>\nBackup: <code>${settings.backupChannel}</code>`,
           { parse_mode: "HTML" }
         ).catch(() => {});
       }
@@ -338,32 +340,47 @@ bot.on("message", async (ctx) => {
         return;
       }
 
-      const cleanHandle = settings.backupChannel.replace("@", "");
-      const joinBtn = new InlineKeyboard().url("⌛ Join Required Group", `https://t.me/${cleanHandle}`);
+      // Improved join URL (supports private channels)
+      let joinUrl = "#";
+      const ch = settings.backupChannel.trim();
+      if (ch.startsWith("@")) {
+        joinUrl = `https://t.me/${ch.replace("@", "")}`;
+      } else if (ch.startsWith("-100")) {
+        joinUrl = `https://t.me/c/${ch.replace("-100", "")}`;
+      } else {
+        joinUrl = `https://t.me/${ch}`;
+      }
+
+      const joinKeyboard = new InlineKeyboard().url("⌛ Join Required Group", joinUrl);
 
       if (warnCount === 1) {
-        const m = await ctx.reply(`⌛ ${mention(from)}, you must join the required group first!`, { reply_markup: joinBtn });
-        setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 20000);
+        const m = await ctx.reply(`⌛ ${mention(from)}, you must join the required group first!`, { reply_markup: joinKeyboard });
+        setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 25000);
       } else if (!settings.silentMode) {
         const m = await ctx.reply(
           `⚠️ ${mention(from)} — Warning <b>${warnCount}/${max}</b>\n\nJoin the required group to chat here!`,
-          { reply_markup: joinBtn }
+          { reply_markup: joinKeyboard }
         );
         setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 20000);
       } else {
-        bot.api.sendMessage(from.id, `⚠️ Warning ${warnCount}/${max} — Join the backup group to chat in ${chat.title}`, { reply_markup: joinBtn })
-          .catch(() => {});
+        bot.api.sendMessage(from.id,
+          `⚠️ Warning ${warnCount}/${max} in ${chat.title}\nJoin the required group to chat.`,
+          { reply_markup: joinKeyboard }
+        ).catch(() => {});
       }
-      return; // Important: don't run bio check if backup failed
+      return;
     } else {
-      // Reset backup warning when they join
       await resetWarning(`backup_${from.id}_${chat.id}`, groupIdStr).catch(() => {});
     }
   }
 
   // ── 2. Bio Link Check ─────────────────────────────────────────────────────
   let bio: string | null = null;
-  try { bio = await getUserBio(from.id); } catch {}
+  try {
+    bio = await getUserBio(from.id);
+  } catch (e) {
+    logger.error({ err: e, userId: from.id }, "Failed to get user bio");
+  }
 
   const hasLink = settings.antiBypassing
     ? containsTelegramLink(bio ?? "") || containsTelegramLink((bio ?? "").replace(/\s/g, ""))
@@ -371,20 +388,32 @@ bot.on("message", async (ctx) => {
 
   if (!hasLink) return;
 
-  // Delete message (unless already deleted by backup check)
-  if (!backupViolation) {
-    try { await ctx.deleteMessage(); } catch {}
-  }
-
-  // Archive to backup
+  // CRITICAL FIX: Archive FIRST, then delete
   if (settings.backupChannel) {
     try {
       await bot.api.forwardMessage(settings.backupChannel, chat.id, ctx.message.message_id);
-    } catch {}
+    } catch (e) {
+      logger.error({ err: e }, "Failed to forward message to backup channel");
+    }
+  }
+
+  if (!backupViolation) {
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      logger.warn({ err: e }, "Failed to delete message");
+    }
   }
 
   const warnCount = await incrementWarning(from.id.toString(), groupIdStr);
   const maxWarnings = settings.maxWarnings;
+
+  await logActivity({
+    type: "link_detected",
+    details: `Bio link — warning ${warnCount}/${maxWarnings}`,
+    userId: from.id.toString(),
+    groupId: groupIdStr,
+  });
 
   if (warnCount >= maxWarnings) {
     await applyPunishment(ctx, from, settings.punishment, warnCount, maxWarnings, groupIdStr, "bio_link");
@@ -392,15 +421,14 @@ bot.on("message", async (ctx) => {
   }
 
   if (warnCount === 1) {
-    const m = await ctx.reply(`⌛`);
+    const m = await ctx.reply("⌛");
     setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 5000);
     return;
   }
 
-  // Warning messages
   if (settings.silentMode) {
     bot.api.sendMessage(from.id,
-      `⚠️ <b>Warning ${warnCount}/${maxWarnings}</b> in <b>${chat.title}</b>\n\nRemove the Telegram link from your bio. ${maxWarnings - warnCount} warning${maxWarnings - warnCount > 1 ? "s" : ""} left.`,
+      `⚠️ <b>Warning ${warnCount}/${maxWarnings}</b> in <b>${chat.title}</b>\n\nRemove Telegram link from your bio.`,
       { parse_mode: "HTML" }
     ).catch(() => {});
   } else {
@@ -412,11 +440,11 @@ bot.on("message", async (ctx) => {
   }
 });
 
-// Keep all your callback queries and other commands as they are (they are mostly fine).
+// Keep your callback queries, commands (/settings, /warn, etc.) as they were.
+// Only the message handler and helpers above have been updated.
 
-// ─── Start Bot ────────────────────────────────────────────────────────────────
 export async function startBot() {
   await ensureBotSettings();
   bot.start();
-  logger.info(`${BOT_USERNAME} started successfully`);
+  logger.info("BioGuard Bot started successfully");
 }
