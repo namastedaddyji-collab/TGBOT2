@@ -1,19 +1,12 @@
 {
   "name": "glassguard-bot",
   "version": "1.0.0",
-  "description": "Telegram moderation bot with bio link protection",
-  "type": "module",
+  "type": "module",          
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node index.js"
   },
   "dependencies": {
-    "grammy": "^1.20.0",
-    "drizzle-orm": "^0.29.0",
-    "pg": "^8.11.0"
+    "grammy": "^1.0.0",
   }
 }
