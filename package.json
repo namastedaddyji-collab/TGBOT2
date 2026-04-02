@@ -4,9 +4,13 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
-    "grammy": "^1.41.1"
+    "grammy": "^1.41.1",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.14.0",
+    "dotenv": "^16.4.7"
   }
 }
