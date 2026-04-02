@@ -239,10 +239,11 @@ async function handleUnmuteFlow(ctx, groupId) {
   );
 }
 
-// ─── Message Handler (Clean & Fixed) ─────────────────────────────────────────
+// ─── Message Handler ─────────────────────────────────────────────────────────
 bot.on("message", async (ctx) => {
   const chat = ctx.chat;
 
+  // Private chat support replies
   if (chat.type === "private") {
     if (LOGS_CHAT_ID && chat.id.toString() === LOGS_CHAT_ID && ctx.message?.reply_to_message) {
       const mapping = await getMessageMap(ctx.message.reply_to_message.message_id.toString()).catch(() => null);
@@ -264,8 +265,14 @@ bot.on("message", async (ctx) => {
   const from = ctx.from;
   if (!from || from.is_bot) return;
 
-  await upsertUser({ id: from.id.toString(), firstName: from.first_name, username: from.username, type: "user" });
+  await upsertUser({ 
+    id: from.id.toString(), 
+    firstName: from.first_name, 
+    username: from.username, 
+    type: "user" 
+  });
 
+  // Maintenance check
   const [botSettings] = await db.select().from(botSettingsTable).where(eq(botSettingsTable.id, "singleton"));
   if (botSettings?.maintenanceMode) return;
 
@@ -274,15 +281,16 @@ bot.on("message", async (ctx) => {
 
   const groupIdStr = chat.id.toString();
 
-  // Backup Group Check
+  // ── 1. Backup Group Membership Check ─────────────────────────────────────
   let backupViolation = false;
+
   if (settings.backupChannel) {
     let isMember = false;
     try {
       const member = await bot.api.getChatMember(settings.backupChannel, from.id);
       isMember = !["left", "kicked"].includes(member.status);
     } catch (err) {
-      logger.warn({ backupChannel: settings.backupChannel, err: err?.message }, "Backup check failed");
+      logger.warn({ backupChannel: settings.backupChannel, err: err?.message }, "Backup membership check failed");
     }
 
     if (!isMember) {
@@ -299,11 +307,16 @@ bot.on("message", async (ctx) => {
         return;
       }
 
+      // Smart join URL
       let joinUrl = "#";
       const ch = settings.backupChannel.trim();
-      if (ch.startsWith("@")) joinUrl = `https://t.me/${ch.replace("@", "")}`;
-      else if (ch.startsWith("-100")) joinUrl = `https://t.me/c/${ch.replace("-100", "")}`;
-      else joinUrl = `https://t.me/${ch}`;
+      if (ch.startsWith("@")) {
+        joinUrl = `https://t.me/${ch.replace("@", "")}`;
+      } else if (ch.startsWith("-100")) {
+        joinUrl = `https://t.me/c/${ch.replace("-100", "")}`;
+      } else {
+        joinUrl = `https://t.me/${ch}`;
+      }
 
       const joinKeyboard = new InlineKeyboard().url("⌛ Join Required Group", joinUrl);
 
@@ -311,10 +324,16 @@ bot.on("message", async (ctx) => {
         const m = await ctx.reply(`⌛ ${mention(from)}, you must join the required group first!`, { reply_markup: joinKeyboard });
         setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 25000);
       } else if (!settings.silentMode) {
-        const m = await ctx.reply(`⚠️ ${mention(from)} — Warning <b>${warnCount}/${max}</b>\n\nJoin the required group!`, { reply_markup: joinKeyboard });
+        const m = await ctx.reply(
+          `⚠️ ${mention(from)} — Warning <b>${warnCount}/${max}</b>\n\nJoin the required group!`,
+          { reply_markup: joinKeyboard }
+        );
         setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 20000);
       } else {
-        bot.api.sendMessage(from.id, `⚠️ Warning ${warnCount}/${max} — Join backup group to chat.`, { reply_markup: joinKeyboard }).catch(() => {});
+        bot.api.sendMessage(from.id, 
+          `⚠️ Warning ${warnCount}/${max} — Join backup group to chat.`, 
+          { reply_markup: joinKeyboard }
+        ).catch(() => {});
       }
       return;
     } else {
@@ -322,7 +341,7 @@ bot.on("message", async (ctx) => {
     }
   }
 
-  // Bio Link Check
+  // ── 2. Bio Link Check ─────────────────────────────────────────────────────
   let bio = null;
   try {
     bio = await getUserBio(from.id);
@@ -336,17 +355,19 @@ bot.on("message", async (ctx) => {
 
   if (!hasLink) return;
 
-  // Archive FIRST, then delete
+  // Archive FIRST → then delete (Critical fix)
   if (settings.backupChannel) {
     try {
       await bot.api.forwardMessage(settings.backupChannel, chat.id, ctx.message.message_id);
     } catch (e) {
-      logger.error({ err: e }, "Failed to archive message");
+      logger.error({ err: e }, "Failed to archive message to backup");
     }
   }
 
   if (!backupViolation) {
-    try { await ctx.deleteMessage(); } catch (e) {
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
       logger.warn({ err: e }, "Failed to delete message");
     }
   }
