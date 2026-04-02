@@ -1,9 +1,10 @@
 {
   "name": "glassguard-bot",
   "version": "1.0.0",
-  "main": "index.mjs",
+  "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.js"
   },
   "dependencies": {
     "grammy": "^1.41.1",
