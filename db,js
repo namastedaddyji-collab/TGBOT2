@@ -1,0 +1,71 @@
+// db.js - Minimal stub for Railway deployment
+export const db = {
+  select: () => ({
+    from: () => ({
+      where: async () => []
+    })
+  }),
+  update: () => ({ set: async () => {} })
+};
+
+export const botSettingsTable = { id: "singleton" };
+export const groupsTable = {};
+export const groupSettingsTable = {};
+export const usersTable = {};
+export const warningsTable = {};
+
+// Dummy functions so bot doesn't crash
+export async function ensureBotSettings() {
+  console.log("✅ ensureBotSettings() called (stub)");
+}
+
+export async function upsertUser(data) {
+  console.log("upsertUser:", data);
+}
+
+export async function upsertGroup(data) {
+  console.log("upsertGroup:", data);
+}
+
+export async function getGroupSettings(groupId) {
+  return {
+    maxWarnings: 3,
+    punishment: "mute",
+    silentMode: false,
+    antiBypassing: true,
+    backupChannel: null
+  };
+}
+
+export async function incrementWarning(userId, groupId) {
+  console.log(`Warning incremented for user ${userId} in group ${groupId}`);
+  return 1; // return current warning count
+}
+
+export async function resetWarning(userId, groupId) {
+  console.log(`Warnings reset for ${userId}`);
+}
+
+export async function logActivity(data) {
+  console.log("Activity logged:", data);
+}
+
+export async function saveMessageMap(messageId, userId) {
+  console.log(`Saved message map: ${messageId} -> ${userId}`);
+}
+
+export async function getMessageMap(messageId) {
+  return null;
+}
+
+export async function adjustReputation(userId, points) {
+  console.log(`Reputation adjusted: ${userId} += ${points}`);
+}
+
+export async function getUserIdsByType(type) {
+  return [];
+}
+
+export async function saveBroadcastHistory(data) {
+  console.log("Broadcast history saved");
+}
