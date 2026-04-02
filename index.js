@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, type Context } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { containsTelegramLink } from "./linkDetector.js";
 import {
   upsertUser,
@@ -26,11 +26,11 @@ if (!BOT_TOKEN) throw new Error("BOT_TOKEN is required");
 export const bot = new Bot(BOT_TOKEN);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function isOwner(userId: number | string): boolean {
+function isOwner(userId) {
   return Number(userId) === OWNER_ID;
 }
 
-async function isAdmin(ctx: Context): Promise<boolean> {
+async function isAdmin(ctx) {
   if (!ctx.from || !ctx.chat) return false;
   if (isOwner(ctx.from.id)) return true;
   try {
@@ -41,7 +41,7 @@ async function isAdmin(ctx: Context): Promise<boolean> {
   }
 }
 
-async function sendLog(text: string, extra?: object) {
+async function sendLog(text, extra = {}) {
   if (!LOGS_CHAT_ID) return;
   try {
     return await bot.api.sendMessage(LOGS_CHAT_ID, text, { parse_mode: "HTML", ...extra });
@@ -50,20 +50,20 @@ async function sendLog(text: string, extra?: object) {
   }
 }
 
-async function getUserBio(userId: number): Promise<string | null> {
+async function getUserBio(userId) {
   try {
     const chat = await bot.api.getChat(userId);
-    return (chat as any).bio ?? null;
+    return chat.bio ?? null;
   } catch {
     return null;
   }
 }
 
-function mention(user: { id: number; first_name: string; username?: string }): string {
+function mention(user) {
   return `<a href="tg://user?id=${user.id}">${user.first_name}</a>`;
 }
 
-async function safeEdit(ctx: Context, text: string, opts: object = {}) {
+async function safeEdit(ctx, text, opts = {}) {
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", ...opts });
   } catch {
@@ -73,14 +73,14 @@ async function safeEdit(ctx: Context, text: string, opts: object = {}) {
   }
 }
 
-async function ack(ctx: Context, text = "") {
+async function ack(ctx, text = "") {
   try {
     await ctx.answerCallbackQuery(text);
   } catch {}
 }
 
 // ─── Mute / Unmute ────────────────────────────────────────────────────────────
-async function muteUser(chatId: number, userId: number) {
+async function muteUser(chatId, userId) {
   await bot.api.restrictChatMember(chatId, userId, {
     permissions: {
       can_send_messages: false,
@@ -100,7 +100,7 @@ async function muteUser(chatId: number, userId: number) {
   });
 }
 
-async function unmuteUser(chatId: number, userId: number) {
+async function unmuteUser(chatId, userId) {
   await bot.api.restrictChatMember(chatId, userId, {
     permissions: {
       can_send_messages: true,
@@ -121,16 +121,8 @@ async function unmuteUser(chatId: number, userId: number) {
 }
 
 // ─── Punishment ───────────────────────────────────────────────────────────────
-async function applyPunishment(
-  ctx: Context,
-  target: { id: number; first_name: string; username?: string },
-  punishment: string,
-  warnCount: number,
-  maxWarns: number,
-  groupId: string,
-  reason: "bio_link" | "backup_group" = "bio_link"
-) {
-  const chatId = ctx.chat!.id;
+async function applyPunishment(ctx, target, punishment, warnCount, maxWarns, groupId, reason = "bio_link") {
+  const chatId = ctx.chat.id;
   let actionDone = "";
 
   try {
@@ -196,7 +188,7 @@ async function applyPunishment(
 }
 
 // ─── Unmute flow ──────────────────────────────────────────────────────────────
-async function handleUnmuteFlow(ctx: Context, groupId: string) {
+async function handleUnmuteFlow(ctx, groupId) {
   if (!ctx.from) return;
   const userId = ctx.from.id;
 
@@ -207,13 +199,12 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
     const keyboard = new InlineKeyboard().text("✅ I removed it — Check again", `recheck_bio_${groupId}`);
     await safeEdit(ctx,
       `🚫 <b>Your bio still has a Telegram link!</b>\n\n` +
-      `📱 <b>Steps to fix:</b>\n1. Open Telegram Settings\n2. Tap <b>Edit Profile</b>\n3. Clear your <b>Bio</b>\n4. Come back and tap the button below`,
+      `📱 <b>Steps to fix:</b>\n1. Open Telegram Settings\n2. Tap Edit Profile\n3. Clear your Bio\n4. Come back and tap the button below`,
       { reply_markup: keyboard }
     );
     return;
   }
 
-  // Bio is clean — unmute / unban
   const groupIdNum = Number(groupId);
   let memberStatus = "unknown";
 
@@ -221,7 +212,7 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
     const member = await bot.api.getChatMember(groupIdNum, userId);
     memberStatus = member.status;
   } catch (e) {
-    logger.error({ err: e }, "getChatMember failed in unmute flow");
+    logger.error({ err: e }, "getChatMember failed in unmute");
     await safeEdit(ctx, `⚠️ Could not verify membership. Ask an admin to unmute you manually.`);
     return;
   }
@@ -233,8 +224,8 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
   }
 
   await adjustReputation(userId.toString(), 10);
-  await resetWarning(userId.toString(), groupId);           // bio warnings
-  await resetWarning(`backup_${userId}_${groupId}`, groupId); // backup warnings
+  await resetWarning(userId.toString(), groupId);
+  await resetWarning(`backup_${userId}_${groupId}`, groupId);
 
   await logActivity({
     type: "unmute",
@@ -248,36 +239,12 @@ async function handleUnmuteFlow(ctx: Context, groupId: string) {
   );
 }
 
-// ─── Main Settings Menu ───────────────────────────────────────────────────────
-async function buildMainSettingsMenu(groupId: string, groupTitle: string) {
-  const s = await getGroupSettings(groupId);
-  if (!s) throw new Error("Settings not found");
-
-  const text = `⚙️ <b>Settings — ${groupTitle}</b>\n\n` +
-    `Tap any button to change settings.\n\n` +
-    `⚠️ Warnings: <b>${s.maxWarnings}</b>\n` +
-    `⚖️ Punishment: <b>${s.punishment.toUpperCase()}</b>\n` +
-    `🤫 Silent Mode: <b>${s.silentMode ? "ON" : "OFF"}</b>\n` +
-    `🛡 Anti-Bypass: <b>${s.antiBypassing ? "ON" : "OFF"}</b>\n` +
-    `📦 Backup Group: <b>${s.backupChannel ?? "Not set"}</b>`;
-
-  const keyboard = new InlineKeyboard()
-    .text("⚠️ Warnings", `menu_warn_${groupId}`).text("⚖️ Punishment", `menu_punish_${groupId}`).row()
-    .text(`🤫 Silent ${s.silentMode ? "✅" : "❌"}`, `menu_silent_${groupId}`)
-    .text(`🛡 Anti-Bypass ${s.antiBypassing ? "✅" : "❌"}`, `menu_antibypass_${groupId}`).row()
-    .text("📦 Backup Group", `menu_backup_${groupId}`).text("📊 Stats", `menu_stats_${groupId}`).row()
-    .text("🏆 Leaderboard", `menu_leaderboard_${groupId}`).text("❌ Close", "close_menu");
-
-  return { text, keyboard };
-}
-
-// ─── Message Handler (Fully Fixed) ────────────────────────────────────────────
+// ─── Message Handler (Clean & Fixed) ─────────────────────────────────────────
 bot.on("message", async (ctx) => {
   const chat = ctx.chat;
 
-  // Private chat: support replies
   if (chat.type === "private") {
-    if (LOGS_CHAT_ID && chat.id.toString() === LOGS_CHAT_ID && ctx.message?.reply_to_message?.message_id) {
+    if (LOGS_CHAT_ID && chat.id.toString() === LOGS_CHAT_ID && ctx.message?.reply_to_message) {
       const mapping = await getMessageMap(ctx.message.reply_to_message.message_id.toString()).catch(() => null);
       if (mapping && ctx.message.text) {
         try {
@@ -299,7 +266,6 @@ bot.on("message", async (ctx) => {
 
   await upsertUser({ id: from.id.toString(), firstName: from.first_name, username: from.username, type: "user" });
 
-  // Maintenance check
   const [botSettings] = await db.select().from(botSettingsTable).where(eq(botSettingsTable.id, "singleton"));
   if (botSettings?.maintenanceMode) return;
 
@@ -308,22 +274,15 @@ bot.on("message", async (ctx) => {
 
   const groupIdStr = chat.id.toString();
 
-  // ── 1. Backup Group Membership Check ─────────────────────────────────────
+  // Backup Group Check
   let backupViolation = false;
-
   if (settings.backupChannel) {
     let isMember = false;
     try {
       const member = await bot.api.getChatMember(settings.backupChannel, from.id);
       isMember = !["left", "kicked"].includes(member.status);
-    } catch (err: any) {
-      logger.warn({ backupChannel: settings.backupChannel, err: err?.message }, "Backup membership check failed");
-      if (OWNER_ID) {
-        bot.api.sendMessage(Number(OWNER_ID),
-          `⚠️ Backup check failed in <b>${chat.title}</b>\nBackup: <code>${settings.backupChannel}</code>`,
-          { parse_mode: "HTML" }
-        ).catch(() => {});
-      }
+    } catch (err) {
+      logger.warn({ backupChannel: settings.backupChannel, err: err?.message }, "Backup check failed");
     }
 
     if (!isMember) {
@@ -340,16 +299,11 @@ bot.on("message", async (ctx) => {
         return;
       }
 
-      // Improved join URL (supports private channels)
       let joinUrl = "#";
       const ch = settings.backupChannel.trim();
-      if (ch.startsWith("@")) {
-        joinUrl = `https://t.me/${ch.replace("@", "")}`;
-      } else if (ch.startsWith("-100")) {
-        joinUrl = `https://t.me/c/${ch.replace("-100", "")}`;
-      } else {
-        joinUrl = `https://t.me/${ch}`;
-      }
+      if (ch.startsWith("@")) joinUrl = `https://t.me/${ch.replace("@", "")}`;
+      else if (ch.startsWith("-100")) joinUrl = `https://t.me/c/${ch.replace("-100", "")}`;
+      else joinUrl = `https://t.me/${ch}`;
 
       const joinKeyboard = new InlineKeyboard().url("⌛ Join Required Group", joinUrl);
 
@@ -357,16 +311,10 @@ bot.on("message", async (ctx) => {
         const m = await ctx.reply(`⌛ ${mention(from)}, you must join the required group first!`, { reply_markup: joinKeyboard });
         setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 25000);
       } else if (!settings.silentMode) {
-        const m = await ctx.reply(
-          `⚠️ ${mention(from)} — Warning <b>${warnCount}/${max}</b>\n\nJoin the required group to chat here!`,
-          { reply_markup: joinKeyboard }
-        );
+        const m = await ctx.reply(`⚠️ ${mention(from)} — Warning <b>${warnCount}/${max}</b>\n\nJoin the required group!`, { reply_markup: joinKeyboard });
         setTimeout(() => ctx.api.deleteMessage(chat.id, m.message_id).catch(() => {}), 20000);
       } else {
-        bot.api.sendMessage(from.id,
-          `⚠️ Warning ${warnCount}/${max} in ${chat.title}\nJoin the required group to chat.`,
-          { reply_markup: joinKeyboard }
-        ).catch(() => {});
+        bot.api.sendMessage(from.id, `⚠️ Warning ${warnCount}/${max} — Join backup group to chat.`, { reply_markup: joinKeyboard }).catch(() => {});
       }
       return;
     } else {
@@ -374,12 +322,12 @@ bot.on("message", async (ctx) => {
     }
   }
 
-  // ── 2. Bio Link Check ─────────────────────────────────────────────────────
-  let bio: string | null = null;
+  // Bio Link Check
+  let bio = null;
   try {
     bio = await getUserBio(from.id);
   } catch (e) {
-    logger.error({ err: e, userId: from.id }, "Failed to get user bio");
+    logger.error({ err: e, userId: from.id }, "Bio fetch failed");
   }
 
   const hasLink = settings.antiBypassing
@@ -388,19 +336,17 @@ bot.on("message", async (ctx) => {
 
   if (!hasLink) return;
 
-  // CRITICAL FIX: Archive FIRST, then delete
+  // Archive FIRST, then delete
   if (settings.backupChannel) {
     try {
       await bot.api.forwardMessage(settings.backupChannel, chat.id, ctx.message.message_id);
     } catch (e) {
-      logger.error({ err: e }, "Failed to forward message to backup channel");
+      logger.error({ err: e }, "Failed to archive message");
     }
   }
 
   if (!backupViolation) {
-    try {
-      await ctx.deleteMessage();
-    } catch (e) {
+    try { await ctx.deleteMessage(); } catch (e) {
       logger.warn({ err: e }, "Failed to delete message");
     }
   }
@@ -428,23 +374,21 @@ bot.on("message", async (ctx) => {
 
   if (settings.silentMode) {
     bot.api.sendMessage(from.id,
-      `⚠️ <b>Warning ${warnCount}/${maxWarnings}</b> in <b>${chat.title}</b>\n\nRemove Telegram link from your bio.`,
+      `⚠️ Warning ${warnCount}/${maxWarnings} in ${chat.title}\nRemove link from bio.`,
       { parse_mode: "HTML" }
     ).catch(() => {});
   } else {
     const msg = await ctx.reply(
-      `⚠️ ${mention(from)} — Warning <b>${warnCount}/${maxWarnings}</b>\n\n🔗 Remove the invite link from your bio!`,
+      `⚠️ ${mention(from)} — Warning <b>${warnCount}/${maxWarnings}</b>\n\n🔗 Remove invite link from bio!`,
       { parse_mode: "HTML" }
     );
     setTimeout(() => ctx.api.deleteMessage(chat.id, msg.message_id).catch(() => {}), 20000);
   }
 });
 
-// Keep your callback queries, commands (/settings, /warn, etc.) as they were.
-// Only the message handler and helpers above have been updated.
-
+// ─── Start Bot ────────────────────────────────────────────────────────────────
 export async function startBot() {
   await ensureBotSettings();
   bot.start();
-  logger.info("BioGuard Bot started successfully");
+  logger.info("✅ BioGuard Bot started successfully");
 }
